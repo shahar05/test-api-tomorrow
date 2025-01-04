@@ -5,66 +5,70 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	_ "github.com/lib/pq" // PostgreSQL driver
 )
 
 const (
+	weatherDataURL     = "https://us-east1-climacell-platform-production.cloudfunctions.net/weather-data"
 	dbConnectionString = "user=postgres password=secret dbname=postgres sslmode=disable"
 )
 
 type WeatherDataResponse struct {
-	ForecastTime      string  `json:"forecastTime"`
+	Latitude          float64 `json:"latitude"`
+	Longitude         float64 `json:"longitude"`
+	ForecastTime      string  `json:"forecast_time"`
+	Temperature       float64 `json:"temperature"`
+	PrecipitationRate float64 `json:"precipitation_rate"`
+	Humidity          float64 `json:"humidity"`
+}
+
+type WeatherAVG struct {
 	Temperature       float64 `json:"Temperature"`
 	PrecipitationRate float64 `json:"Precipitation_rate"`
 	Humidity          float64 `json:"Humidity"`
 }
 
 type WeatherSummaryResponse struct {
-	Max struct {
-		Temperature       float64 `json:"Temperature"`
-		PrecipitationRate float64 `json:"Precipitation_rate"`
-		Humidity          float64 `json:"Humidity"`
-	} `json:"max"`
-	Min struct {
-		Temperature       float64 `json:"Temperature"`
-		PrecipitationRate float64 `json:"Precipitation_rate"`
-		Humidity          float64 `json:"Humidity"`
-	} `json:"min"`
-	Avg struct {
-		Temperature       float64 `json:"Temperature"`
-		PrecipitationRate float64 `json:"Precipitation_rate"`
-		Humidity          float64 `json:"Humidity"`
-	} `json:"avg"`
+	Max WeatherAVG `json:"max"`
+	Min WeatherAVG `json:"min"`
+	Avg WeatherAVG `json:"avg"`
 }
 
 type BatchMetadata struct {
-	BatchID         string `json:"batch_id"`
-	ForecastTime    string `json:"forecast_time"`
-	NumberOfRows    int    `json:"number_of_rows"`
-	StartIngestTime string `json:"start_ingest_time"`
-	EndIngestTime   string `json:"end_ingest_time"`
-	Status          string `json:"status"`
+	BatchID         string  `json:"batch_id"`
+	ForecastTime    string  `json:"forecast_time"`
+	NumberOfRows    int     `json:"number_of_rows"`
+	StartIngestTime string  `json:"start_ingest_time"`
+	EndIngestTime   *string `json:"end_ingest_time"`
+	Status          string  `json:"status"`
+}
+
+type Batch struct {
+	BatchID      string    `json:"batch_id"`
+	ForecastTime time.Time `json:"forecast_time"`
 }
 
 func getWeatherDataHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		lat := r.URL.Query().Get("lat")
-		lon := r.URL.Query().Get("lon")
-		if lat == "" || lon == "" {
-			http.Error(w, "Missing lat or lon query parameters", http.StatusBadRequest)
+		lng := r.URL.Query().Get("lng")
+		if lat == "" || lng == "" {
+			http.Error(w, "Missing lat or lng query parameters", http.StatusBadRequest)
 			return
 		}
 
 		query := `
-			SELECT forecast_time, temperature, precipitation_rate, humidity
+			SELECT latitude, longitude, forecast_time, temperature, precipitation_rate, humidity
 			FROM weather_data
 			WHERE latitude = $1 AND longitude = $2
 			ORDER BY forecast_time`
 
-		rows, err := db.Query(query, lat, lon)
+		rows, err := db.Query(query, lat, lng)
 		if err != nil {
 			http.Error(w, "Failed to fetch weather data", http.StatusInternalServerError)
 			log.Printf("Query error: %v", err)
@@ -75,7 +79,7 @@ func getWeatherDataHandler(db *sql.DB) http.HandlerFunc {
 		var results []WeatherDataResponse
 		for rows.Next() {
 			var data WeatherDataResponse
-			if err := rows.Scan(&data.ForecastTime, &data.Temperature, &data.PrecipitationRate, &data.Humidity); err != nil {
+			if err := rows.Scan(&data.Latitude, &data.Longitude, &data.ForecastTime, &data.Temperature, &data.PrecipitationRate, &data.Humidity); err != nil {
 				http.Error(w, "Failed to parse weather data", http.StatusInternalServerError)
 				log.Printf("Scan error: %v", err)
 				return
@@ -91,9 +95,9 @@ func getWeatherDataHandler(db *sql.DB) http.HandlerFunc {
 func getWeatherSummaryHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		lat := r.URL.Query().Get("lat")
-		lon := r.URL.Query().Get("lon")
-		if lat == "" || lon == "" {
-			http.Error(w, "Missing lat or lon query parameters", http.StatusBadRequest)
+		lng := r.URL.Query().Get("lng")
+		if lat == "" || lng == "" {
+			http.Error(w, "Missing lat or lng query parameters", http.StatusBadRequest)
 			return
 		}
 
@@ -105,7 +109,7 @@ func getWeatherSummaryHandler(db *sql.DB) http.HandlerFunc {
 			FROM weather_data
 			WHERE latitude = $1 AND longitude = $2`
 
-		row := db.QueryRow(query, lat, lon)
+		row := db.QueryRow(query, lat, lng)
 		var summary WeatherSummaryResponse
 		if err := row.Scan(
 			&summary.Max.Temperature, &summary.Min.Temperature, &summary.Avg.Temperature,
@@ -122,15 +126,52 @@ func getWeatherSummaryHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+func fetchBatches() ([]Batch, error) {
+	resp, err := http.Get(fmt.Sprintf("%s/batches", weatherDataURL))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var batches []Batch
+	if err := json.NewDecoder(resp.Body).Decode(&batches); err != nil {
+		return nil, err
+	}
+
+	return batches, nil
+}
+
+func fetchBatchesAsMap() (batchesMap map[string]struct{}) {
+	batchesMap = make(map[string]struct{})
+	batches, err := fetchBatches()
+	if err != nil {
+		log.Println("/batches endpoint is currently offline")
+		return
+	}
+	for _, b := range batches {
+		batchesMap[b.BatchID] = struct{}{}
+	}
+	return
+}
+
 func getBatchesHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Modify the query to include the number of rows from the weather_data table and the status from the batches table
 		query := `
-			SELECT batch_id, forecast_time, COUNT(*) as number_of_rows,
-				start_ingest_time, end_ingest_time, status
-			FROM batches
-			LEFT JOIN weather_data ON batches.batch_id = weather_data.batch_id
-			GROUP BY batches.batch_id, batches.forecast_time, batches.start_ingest_time, batches.end_ingest_time, batches.status`
+			SELECT 
+				b.batch_id, 
+				b.forecast_time, 
+				b.start_ingest_time, 
+				b.end_ingest_time, 
+				b.running, 
+				COALESCE(COUNT(wd.id), 0) AS number_of_rows
+			FROM batches b
+			LEFT JOIN weather_data wd ON b.batch_id = wd.batch_id
+			WHERE b.deleted = FALSE
+			GROUP BY b.batch_id, b.forecast_time, b.start_ingest_time, b.end_ingest_time, b.running
+		`
 
+		// Execute the query
 		rows, err := db.Query(query)
 		if err != nil {
 			http.Error(w, "Failed to fetch batch metadata", http.StatusInternalServerError)
@@ -139,17 +180,31 @@ func getBatchesHandler(db *sql.DB) http.HandlerFunc {
 		}
 		defer rows.Close()
 
+		batchesMap := fetchBatchesAsMap()
+
 		var results []BatchMetadata
 		for rows.Next() {
 			var batch BatchMetadata
-			if err := rows.Scan(&batch.BatchID, &batch.ForecastTime, &batch.NumberOfRows, &batch.StartIngestTime, &batch.EndIngestTime, &batch.Status); err != nil {
+			var isRuning bool
+			// Scan the values from the query result into the BatchMetadata struct
+			if err := rows.Scan(&batch.BatchID, &batch.ForecastTime, &batch.StartIngestTime, &batch.EndIngestTime, &isRuning, &batch.NumberOfRows); err != nil {
 				http.Error(w, "Failed to parse batch metadata", http.StatusInternalServerError)
 				log.Printf("Scan error: %v", err)
 				return
 			}
+
+			batch.Status = "INACTIVE"
+			if isRuning {
+				batch.Status = "RUNNING"
+			} else if _, exists := batchesMap[batch.BatchID]; exists {
+				batch.Status = "ACTIVE"
+			}
+
+			// Append the batch metadata to the results slice
 			results = append(results, batch)
 		}
 
+		// Set the response header to JSON and encode the results
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(results)
 	}
