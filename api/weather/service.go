@@ -1,6 +1,7 @@
 package weather
 
 import (
+	"database/sql"
 	"log"
 )
 
@@ -31,7 +32,9 @@ func GetWeatherData(lat, lng float64) ([]WeatherDataResponse, error) {
 	return results, nil
 }
 
-func GetWeatherSummary(lat, lng float64) (summary WeatherSummaryResponse, err error) {
+func GetWeatherSummary(lat, lng float64) (*WeatherSummaryResponse, error) {
+	summary := &WeatherSummaryResponse{}
+	var err error
 	query := `
 			SELECT
 				MAX(temperature), MIN(temperature), AVG(temperature),
@@ -47,9 +50,13 @@ func GetWeatherSummary(lat, lng float64) (summary WeatherSummaryResponse, err er
 		&summary.Max.PrecipitationRate, &summary.Min.PrecipitationRate, &summary.Avg.PrecipitationRate,
 		&summary.Max.Humidity, &summary.Min.Humidity, &summary.Avg.Humidity,
 	); err != nil {
+		if err == sql.ErrNoRows {
+			// If no rows are returned, return nil without an error
+			return nil, nil
+		}
 		log.Printf("Query error: %v", err)
-		return
+		return nil, err
 	}
 
-	return
+	return summary, nil
 }
