@@ -12,7 +12,7 @@ import (
 
 func main() {
 	// Init DB
-	db := db.GetDB()
+	db := db.Init()
 
 	// Init Router
 	r := mux.NewRouter()

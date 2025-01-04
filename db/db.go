@@ -6,31 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sync"
-	"time"
 
 	_ "github.com/lib/pq"
 )
-
-var (
-	dbInstance *sql.DB
-	once       sync.Once
-)
-
-func GetDB() *sql.DB {
-	once.Do(func() {
-		var err error
-		dbInstance, err = sql.Open("postgres", "user=postgres password=secret dbname=postgres sslmode=disable")
-		if err != nil {
-			log.Fatalf("Failed to connect to database: %v", err)
-		}
-		// Optionally, set connection pool settings
-		dbInstance.SetMaxOpenConns(10)
-		dbInstance.SetMaxIdleConns(5)
-		dbInstance.SetConnMaxLifetime(30 * time.Minute)
-	})
-	return dbInstance
-}
 
 // Init initializes the database connection
 func Init() *sql.DB {

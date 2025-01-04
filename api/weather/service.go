@@ -30,3 +30,26 @@ func GetWeatherData(lat, lng float64) ([]WeatherDataResponse, error) {
 
 	return results, nil
 }
+
+func GetWeatherSummary(lat, lng float64) (summary WeatherSummaryResponse, err error) {
+	query := `
+			SELECT
+				MAX(temperature), MIN(temperature), AVG(temperature),
+				MAX(precipitation_rate), MIN(precipitation_rate), AVG(precipitation_rate),
+				MAX(humidity), MIN(humidity), AVG(humidity)
+			FROM weather_data
+			WHERE latitude = $1 AND longitude = $2`
+
+	row := db.QueryRow(query, lat, lng)
+
+	if err = row.Scan(
+		&summary.Max.Temperature, &summary.Min.Temperature, &summary.Avg.Temperature,
+		&summary.Max.PrecipitationRate, &summary.Min.PrecipitationRate, &summary.Avg.PrecipitationRate,
+		&summary.Max.Humidity, &summary.Min.Humidity, &summary.Avg.Humidity,
+	); err != nil {
+		log.Printf("Query error: %v", err)
+		return
+	}
+
+	return
+}
